@@ -1,9 +1,10 @@
 """
 End-to-end **data** pipeline: transform inputs → merge (update.py) → impact report → copy Excel to ``output/`` → cleaning.
 
-**Data root**: folder that contains ``input/``, ``processing/``, and ``output/`` (or ``…/input`` —
-see ``normalize_data_root``). Set ``HARDCODED_DATA_ROOT`` below to skip ``--root``, or pass
-``--root`` on the command line to override it.
+**Paths:** Either set **three** globals ``INPUT_STORAGE``, ``PROCESSING_STORAGE``, ``OUTPUT_STORAGE``
+(pointing at your ``input``, ``processing``, and ``output`` trees on Drive/GCS — see below), **or**
+use a **single** workspace with ``--root`` / ``HARDCODED_DATA_ROOT`` (folder containing
+``input/``, ``processing/``, ``output/``).
 
 Steps:
 1. Choose ``input/update/*.csv`` and ``input/rate/*.xlsx`` (same prompts as ``update.py``).
@@ -47,14 +48,27 @@ def _resolve_script_dir() -> Path:
 SCRIPT_DIR = _resolve_script_dir()
 
 # ---------------------------------------------------------------------------
-# Hardcode your data workspace here (optional).
-# Same rules as ``--root``: either the parent folder of ``input/`` **or** the path ending in
-# ``…/input``. Use ``None`` to rely on ``--root`` or the script directory (default).
+# **Split storage** — set all three to use different folders (e.g. separate Google Drive dirs).
+# ``--root`` / ``HARDCODED_DATA_ROOT`` are then ignored.
+#
+#   INPUT_STORAGE     → directory that contains ``update/`` (CSV) and ``rate/`` (Excel templates)
+#   PROCESSING_STORAGE → directory that contains ``rate/``, ``update/``, ``update_to_perform/``, ``result/``
+#   OUTPUT_STORAGE    → final Excel outputs (impact report + merged workbook copy)
+#
 # Examples:
-#   HARDCODED_DATA_ROOT = Path("/content/drive/MyDrive/CAT test/input")
-#   HARDCODED_DATA_ROOT = Path(r"C:\Users\me\Projects\CAT-data")
+#   INPUT_STORAGE = Path("/content/drive/ShareA/input")
+#   PROCESSING_STORAGE = Path("/content/drive/ShareB/processing")
+#   OUTPUT_STORAGE = Path("/content/drive/ShareC/output")
 # ---------------------------------------------------------------------------
-HARDCODED_DATA_ROOT: Path("/content/drive/MyDrive/CAT test")
+INPUT_STORAGE: Path("/content/drive/MyDrive/CAT test/input")
+PROCESSING_STORAGE: Path("/content/drive/MyDrive/CAT test/processing")
+OUTPUT_STORAGE: Path("/content/drive/MyDrive/CAT test/output")
+
+# ---------------------------------------------------------------------------
+# **Single-tree mode** (only when the three paths above are all ``None``):
+# workspace folder with ``input/``, ``processing/``, ``output/``, or ``…/input`` only.
+# ---------------------------------------------------------------------------
+HARDCODED_DATA_ROOT: Path | str | None = None
 
 
 def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
@@ -127,6 +141,85 @@ def apply_data_root(data_root: Path) -> None:
     ti.OUT_UPDATE = data_root / "processing" / "update"
 
 
+def apply_split_paths(
+    input_storage: Path,
+    processing_storage: Path,
+    output_storage: Path,
+) -> None:
+    """Three independent roots (input / processing / output trees)."""
+    import transform_inputs as ti
+
+    inp = input_storage.resolve(strict=False)
+    proc = processing_storage.resolve(strict=False)
+
+    ti.ROOT = inp
+    ti.INPUT_UPDATE = inp / "update"
+    ti.INPUT_RATE = inp / "rate"
+    ti.OUT_RATE = proc / "rate"
+    ti.OUT_UPDATE = proc / "update"
+
+
+def patch_update_list_rate_jsons_for_processing(up, processing_storage: Path) -> None:
+    """Route ``list_rate_jsons`` to ``processing_storage/rate`` when roots differ."""
+    proc = processing_storage.resolve(strict=False)
+
+    def list_rate_jsons_split() -> list[Path]:
+        d = proc / "rate"
+        if not d.is_dir():
+            return []
+        return sorted(p for p in d.glob("*.json") if p.is_file())
+
+    up.list_rate_jsons = list_rate_jsons_split
+
+
+def _print_no_csv_help(
+    iu: Path,
+    ir: Path,
+    script_dir: Path,
+    *,
+    hint_repo_workspace: bool,
+) -> None:
+    same_as_repo = hint_repo_workspace
+    print(
+        f"No Ocean Rates *.csv found in:\n  {iu}\n",
+        end="",
+    )
+    if same_as_repo:
+        print(
+            "\nThe data root is the **code repo**; by default it has no CSVs. Either:\n"
+            "  • Copy your update CSV into the folder above, or\n"
+            "  • Point the pipeline at your **data** folder (Colab: usually Drive), e.g. in this file set:\n"
+            "      HARDCODED_DATA_ROOT = Path('/content/drive/MyDrive/CAT test/input')\n"
+            "    or run:  python pipeline.py --root \"/content/drive/MyDrive/CAT test/input\"\n"
+        )
+    else:
+        print(
+            "\nAdd *.csv there, or fix --root / HARDCODED_DATA_ROOT so it points to the folder "
+            "that contains your ``input/update/`` tree.\n"
+        )
+    print(f"Rate card Excel is read from:\n  {ir}\n")
+
+
+def _print_no_rate_xlsx_help(
+    ir: Path,
+    script_dir: Path,
+    *,
+    hint_repo_workspace: bool,
+) -> None:
+    same_as_repo = hint_repo_workspace
+    print(
+        f"No rate workbook *.xlsx found in:\n  {ir}\n",
+        end="",
+    )
+    if same_as_repo:
+        print(
+            "\nAdd your baseline Rate Card Excel there, or set **HARDCODED_DATA_ROOT** / ``--root`` "
+            "to the folder where ``input/rate`` lives (often Drive on Colab).\n"
+        )
+    else:
+        print("\nAdd *.xlsx there or fix your data root.\n")
+
+
 def ensure_layout(data_root: Path) -> None:
     data_root = data_root.resolve()
     for rel in (
@@ -139,6 +232,21 @@ def ensure_layout(data_root: Path) -> None:
         "output",
     ):
         (data_root.joinpath(*rel.split("/"))).mkdir(parents=True, exist_ok=True)
+
+
+def ensure_layout_split(
+    input_storage: Path,
+    processing_storage: Path,
+    output_storage: Path,
+) -> None:
+    inp = input_storage.resolve(strict=False)
+    proc = processing_storage.resolve(strict=False)
+    out = output_storage.resolve(strict=False)
+    for sub in ("update", "rate"):
+        (inp / sub).mkdir(parents=True, exist_ok=True)
+    for sub in ("rate", "update", "update_to_perform", "result"):
+        (proc / sub).mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
 
 
 def run_transform_single(csv_path: Path, template_xlsx: Path) -> tuple[Path, Path]:
@@ -189,29 +297,92 @@ def main() -> None:
     # Jupyter/IPython inject e.g. ``-f …/kernel-….json`` — ignore unknown argv tails.
     args, _unknown_argv = ap.parse_known_args()
 
-    if args.root is not None:
-        raw_root: Path | str | None = args.root
-    elif HARDCODED_DATA_ROOT is not None:
-        raw_root = HARDCODED_DATA_ROOT
+    split_set = sum(
+        1 for x in (INPUT_STORAGE, PROCESSING_STORAGE, OUTPUT_STORAGE) if x is not None
+    )
+    if split_set not in (0, 3):
+        print(
+            "Set all three of INPUT_STORAGE, PROCESSING_STORAGE, OUTPUT_STORAGE in pipeline.py, "
+            "or leave all three as None for single-tree mode (--root / HARDCODED_DATA_ROOT)."
+        )
+        raise SystemExit(1)
+
+    use_split = split_set == 3
+    data_root: Path | None = None
+    clean_processing_target: Path | None = None
+
+    if use_split:
+        if args.root is not None or HARDCODED_DATA_ROOT is not None:
+            print("Note: --root / HARDCODED_DATA_ROOT ignored (split storage paths are set).\n")
+        input_storage = Path(INPUT_STORAGE).expanduser()
+        processing_storage = Path(PROCESSING_STORAGE).expanduser()
+        output_storage = Path(OUTPUT_STORAGE).expanduser()
+        apply_split_paths(input_storage, processing_storage, output_storage)
+        ensure_layout_split(input_storage, processing_storage, output_storage)
+
+        import update as up
+        from update import result_stem_for_merge_output
+        import update_impact_report as uir
+
+        inp = input_storage.resolve(strict=False)
+        proc = processing_storage.resolve(strict=False)
+        out = output_storage.resolve(strict=False)
+
+        up.INPUT_UPDATE = inp / "update"
+        up.INPUT_RATE = inp / "rate"
+        up.OUT_COMBINED_DIR = proc / "update_to_perform"
+        up.OUT_RESULT_DIR = proc / "result"
+        if inp.name.lower() == "input" and proc.name.lower() == "processing":
+            up.ROOT = inp.parent
+        else:
+            up.ROOT = inp
+        patch_update_list_rate_jsons_for_processing(up, proc)
+        uir.OUTPUT_DIR_DEFAULT = out
+
+        iu, ir = up.INPUT_UPDATE, up.INPUT_RATE
+        out_dir = out
+        clean_processing_target = proc
+
+        print(
+            f"\nSplit storage:\n"
+            f"  input:       {inp}\n"
+            f"  processing:  {proc}\n"
+            f"  output:      {out}\n"
+        )
     else:
-        raw_root = None
+        if args.root is not None:
+            raw_root: Path | str | None = args.root
+        elif HARDCODED_DATA_ROOT is not None:
+            raw_root = HARDCODED_DATA_ROOT
+        else:
+            raw_root = None
 
-    data_root = normalize_data_root(raw_root, default=SCRIPT_DIR)
-    apply_data_root(data_root)
-    ensure_layout(data_root)
+        data_root = normalize_data_root(raw_root, default=SCRIPT_DIR)
+        apply_data_root(data_root)
+        ensure_layout(data_root)
 
-    import update as up
-    from update import result_stem_for_merge_output
-    import update_impact_report as uir
+        import update as up
+        from update import result_stem_for_merge_output
+        import update_impact_report as uir
 
-    up.ROOT = data_root
-    up.INPUT_UPDATE = data_root / "input" / "update"
-    up.INPUT_RATE = data_root / "input" / "rate"
-    up.OUT_COMBINED_DIR = data_root / "processing" / "update_to_perform"
-    up.OUT_RESULT_DIR = data_root / "processing" / "result"
-    uir.OUTPUT_DIR_DEFAULT = data_root / "output"
+        up.ROOT = data_root
+        up.INPUT_UPDATE = data_root / "input" / "update"
+        up.INPUT_RATE = data_root / "input" / "rate"
+        up.OUT_COMBINED_DIR = data_root / "processing" / "update_to_perform"
+        up.OUT_RESULT_DIR = data_root / "processing" / "result"
+        uir.OUTPUT_DIR_DEFAULT = data_root / "output"
 
-    print(f"\nData root (workspace): {data_root}\n")
+        iu, ir = up.INPUT_UPDATE, up.INPUT_RATE
+        out_dir = data_root / "output"
+        clean_processing_target = None
+
+        print(f"\nData root (workspace): {data_root}\n")
+
+    hint_repo = (data_root is not None) and (data_root.resolve() == SCRIPT_DIR.resolve())
+
+    if not up.list_update_csvs():
+        _print_no_csv_help(iu, ir, SCRIPT_DIR, hint_repo_workspace=hint_repo)
+        raise SystemExit(1)
     print("Select files (same lists as update.py).\n")
 
     csv_path = up.prompt_pick_csv()
@@ -220,6 +391,10 @@ def main() -> None:
         raise SystemExit(1)
     csv_path = csv_path.resolve()
     print(f"Using CSV: {csv_path}")
+
+    if not up.list_rate_templates():
+        _print_no_rate_xlsx_help(ir, SCRIPT_DIR, hint_repo_workspace=hint_repo)
+        raise SystemExit(1)
 
     tpl_path = up.prompt_pick_template_xlsx()
     if not tpl_path or not tpl_path.is_file():
@@ -287,9 +462,13 @@ def main() -> None:
 
     if not args.skip_clean:
         print("\n--- cleaning (processing only; input/ unchanged) ---\n")
-        from cleaning import clean_processing
+        from cleaning import clean_processing, clean_processing_folder
 
-        errs = clean_processing(data_root)
+        if clean_processing_target is not None:
+            errs = clean_processing_folder(clean_processing_target)
+        else:
+            assert data_root is not None
+            errs = clean_processing(data_root)
         for line in errs:
             print(line)
         if errs:
