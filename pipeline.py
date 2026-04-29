@@ -27,6 +27,7 @@ CLI parsing uses ``parse_known_args()`` so Jupyter kernel flags (e.g. ``-f …/k
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -61,15 +62,33 @@ SCRIPT_DIR = _resolve_script_dir()
 #   PROCESSING_STORAGE = Path("/content/drive/ShareB/processing")
 #   OUTPUT_STORAGE = Path("/content/drive/ShareC/output")
 # ---------------------------------------------------------------------------
-INPUT_STORAGE = Path("/content/drive/MyDrive/CAT test/input")
-PROCESSING_STORAG = Path("/content/drive/MyDrive/CAT test/processing")
-OUTPUT_STORAGE = Path("/content/drive/MyDrive/CAT test/output")
+INPUT_STORAGE: Path | str | None = None
+PROCESSING_STORAGE: Path | str | None = None
+OUTPUT_STORAGE: Path | str | None = None
 
 # ---------------------------------------------------------------------------
 # **Single-tree mode** (only when the three paths above are all ``None``):
 # workspace folder with ``input/``, ``processing/``, ``output/``, or ``…/input`` only.
 # ---------------------------------------------------------------------------
 HARDCODED_DATA_ROOT: Path | str | None = None
+
+# When True, after CSV/template selection the pipeline hides merge/report/clean chatter and
+# prints only ``Done`` on success. Interactive pick lists still print. Override with
+# ``python pipeline.py --verbose`` or set ``PIPELINE_QUIET = False`` below.
+PIPELINE_QUIET = True
+
+
+@contextlib.contextmanager
+def _silence_stdio():
+    """Redirect stdout and stderr to os.devnull (for update / impact / transform subprocess-style noise)."""
+    with open(os.devnull, "w", encoding="utf-8") as devnull:
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout = devnull
+            sys.stderr = devnull
+            yield
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
 
 
 def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
@@ -255,24 +274,34 @@ def ensure_layout_split(
     out.mkdir(parents=True, exist_ok=True)
 
 
-def run_transform_single(csv_path: Path, template_xlsx: Path) -> tuple[Path, Path]:
+def run_transform_single(
+    csv_path: Path, template_xlsx: Path, *, quiet: bool = False
+) -> tuple[Path, Path]:
     """Write processing JSON for the chosen CSV and rate workbook; return (update_json, rate_json)."""
     from transform_inputs import OUT_RATE, OUT_UPDATE, csv_to_json, safe_json_name, workbook_to_json
 
     csv_path = csv_path.resolve()
     template_xlsx = template_xlsx.resolve()
 
-    upd = csv_to_json(csv_path)
-    up_json = OUT_UPDATE / f"{safe_json_name(csv_path.stem)}.json"
-    up_json.write_text(json.dumps(upd, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[transform] Wrote {up_json}")
+    def _run() -> tuple[Path, Path]:
+        upd = csv_to_json(csv_path)
+        up_json = OUT_UPDATE / f"{safe_json_name(csv_path.stem)}.json"
+        up_json.write_text(json.dumps(upd, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not quiet:
+            print(f"[transform] Wrote {up_json}")
 
-    rt = workbook_to_json(template_xlsx)
-    rate_json = OUT_RATE / f"{safe_json_name(template_xlsx.stem)}.json"
-    rate_json.write_text(json.dumps(rt, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[transform] Wrote {rate_json}")
+        rt = workbook_to_json(template_xlsx)
+        rate_json = OUT_RATE / f"{safe_json_name(template_xlsx.stem)}.json"
+        rate_json.write_text(json.dumps(rt, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not quiet:
+            print(f"[transform] Wrote {rate_json}")
 
-    return up_json, rate_json
+        return up_json, rate_json
+
+    if quiet:
+        with _silence_stdio():
+            return _run()
+    return _run()
 
 
 def main() -> None:
@@ -300,8 +329,15 @@ def main() -> None:
         action="store_true",
         help="Do not run cleaning at the end.",
     )
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full step-by-step progress (default is quiet: only prompts and final Done).",
+    )
     # Jupyter/IPython inject e.g. ``-f …/kernel-….json`` — ignore unknown argv tails.
     args, _unknown_argv = ap.parse_known_args()
+
+    quiet = PIPELINE_QUIET and not args.verbose
 
     split_set = sum(
         1 for x in (INPUT_STORAGE, PROCESSING_STORAGE, OUTPUT_STORAGE) if x is not None
@@ -318,7 +354,7 @@ def main() -> None:
     clean_processing_target: Path | None = None
 
     if use_split:
-        if args.root is not None or HARDCODED_DATA_ROOT is not None:
+        if (args.root is not None or HARDCODED_DATA_ROOT is not None) and not quiet:
             print("Note: --root / HARDCODED_DATA_ROOT ignored (split storage paths are set).\n")
         input_storage = Path(INPUT_STORAGE).expanduser()
         processing_storage = Path(PROCESSING_STORAGE).expanduser()
@@ -349,12 +385,13 @@ def main() -> None:
         out_dir = out
         clean_processing_target = proc
 
-        print(
-            f"\nSplit storage:\n"
-            f"  input:       {inp}\n"
-            f"  processing:  {proc}\n"
-            f"  output:      {out}\n"
-        )
+        if not quiet:
+            print(
+                f"\nSplit storage:\n"
+                f"  input:       {inp}\n"
+                f"  processing:  {proc}\n"
+                f"  output:      {out}\n"
+            )
     else:
         if args.root is not None:
             raw_root: Path | str | None = args.root
@@ -382,21 +419,24 @@ def main() -> None:
         out_dir = data_root / "output"
         clean_processing_target = None
 
-        print(f"\nData root (workspace): {data_root}\n")
+        if not quiet:
+            print(f"\nData root (workspace): {data_root}\n")
 
     hint_repo = (data_root is not None) and (data_root.resolve() == SCRIPT_DIR.resolve())
 
     if not up.list_update_csvs():
         _print_no_csv_help(iu, ir, SCRIPT_DIR, hint_repo_workspace=hint_repo)
         raise SystemExit(1)
-    print("Select files (same lists as update.py).\n")
+    if not quiet:
+        print("Select files (same lists as update.py).\n")
 
     csv_path = up.prompt_pick_csv()
     if not csv_path or not csv_path.is_file():
         print("No CSV selected.")
         raise SystemExit(1)
     csv_path = csv_path.resolve()
-    print(f"Using CSV: {csv_path}")
+    if not quiet:
+        print(f"Using CSV: {csv_path}")
 
     if not up.list_rate_templates():
         _print_no_rate_xlsx_help(ir, SCRIPT_DIR, hint_repo_workspace=hint_repo)
@@ -407,11 +447,13 @@ def main() -> None:
         print("No rate template Excel selected.")
         raise SystemExit(1)
     tpl_path = tpl_path.resolve()
-    print(f"Using rate template: {tpl_path}\n")
+    if not quiet:
+        print(f"Using rate template: {tpl_path}\n")
 
-    _, rate_json_path = run_transform_single(csv_path, tpl_path)
+    _, rate_json_path = run_transform_single(csv_path, tpl_path, quiet=quiet)
 
-    print("\n--- update.py (merge + Excel) ---\n")
+    if not quiet:
+        print("\n--- update.py (merge + Excel) ---\n")
     old_argv = sys.argv[:]
     try:
         sys.argv = [
@@ -423,7 +465,11 @@ def main() -> None:
             "--template-xlsx",
             str(tpl_path),
         ]
-        up.main()
+        if quiet:
+            with _silence_stdio():
+                up.main()
+        else:
+            up.main()
     finally:
         sys.argv = old_argv
 
@@ -433,7 +479,8 @@ def main() -> None:
     if not combined_path.is_file():
         print(f"Warning: expected combined JSON missing: {combined_path}")
 
-    print("\n--- update_impact_report.py ---\n")
+    if not quiet:
+        print("\n--- update_impact_report.py ---\n")
     # out_dir was set in split branch (output_storage) or legacy branch (data_root/output).
     old_argv = sys.argv[:]
     try:
@@ -448,11 +495,16 @@ def main() -> None:
             "--rate-card-label",
             csv_path.stem,
         ]
-        uir.main()
+        if quiet:
+            with _silence_stdio():
+                uir.main()
+        else:
+            uir.main()
     finally:
         sys.argv = old_argv
 
-    print("\n--- copy merged Excel to output/ ---\n")
+    if not quiet:
+        print("\n--- copy merged Excel to output/ ---\n")
     try:
         prior = json.loads(rate_json_path.read_text(encoding="utf-8"))
         out_stem = result_stem_for_merge_output(rate_json_path, tpl_path, prior)
@@ -460,31 +512,45 @@ def main() -> None:
         if merged_xlsx.is_file():
             dest = out_dir / merged_xlsx.name
             shutil.copy2(merged_xlsx, dest)
-            print(f"Copied {merged_xlsx.name} → {dest}")
+            if not quiet:
+                print(f"Copied {merged_xlsx.name} → {dest}")
         else:
             print(f"Warning: merged Excel not found: {merged_xlsx}")
     except Exception as ex:
         print(f"Warning: could not copy merged Excel: {ex}")
 
     if not args.skip_clean:
-        print("\n--- cleaning (processing only; input/ unchanged) ---\n")
+        if not quiet:
+            print("\n--- cleaning (processing only; input/ unchanged) ---\n")
         from cleaning import clean_processing, clean_processing_folder
 
-        if clean_processing_target is not None:
-            errs = clean_processing_folder(clean_processing_target)
+        if quiet:
+            with _silence_stdio():
+                if clean_processing_target is not None:
+                    errs = clean_processing_folder(clean_processing_target)
+                else:
+                    assert data_root is not None
+                    errs = clean_processing(data_root)
         else:
-            assert data_root is not None
-            errs = clean_processing(data_root)
-        for line in errs:
-            print(line)
-        if errs:
-            print("(Cleaning reported errors; output/ was not cleaned.)")
-        else:
-            print("Cleaning finished.")
-    else:
+            if clean_processing_target is not None:
+                errs = clean_processing_folder(clean_processing_target)
+            else:
+                assert data_root is not None
+                errs = clean_processing(data_root)
+        if not quiet:
+            for line in errs:
+                print(line)
+            if errs:
+                print("(Cleaning reported errors; output/ was not cleaned.)")
+            else:
+                print("Cleaning finished.")
+    elif not quiet:
         print("\nSkipping cleaning (--skip-clean).")
 
-    print(f"\nDone. Excel artifacts under: {out_dir}\n")
+    if quiet:
+        print("Done", flush=True)
+    else:
+        print(f"\nDone. Excel artifacts under: {out_dir}\n")
 
 
 if __name__ == "__main__":
