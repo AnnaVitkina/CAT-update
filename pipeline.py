@@ -12,18 +12,36 @@ Steps:
 4. Run ``update_impact_report`` on the combined JSON + baseline rate JSON.
 5. Copy merged result ``*.xlsx`` into ``output/`` (impact report already writes there).
 6. Run ``cleaning.clean_processing`` only (``input/`` is not touched).
+
+**Colab / Jupyter:** ``exec(open(...))`` does not define ``__file__``. Fix one of:
+
+- ``os.chdir("/content/CAT-update")`` before ``exec`` (uses current directory as script folder), or
+- ``os.environ["CAT_UPDATE_SCRIPT_DIR"] = "/content/CAT-update"`` before loading, or
+- ``%run /content/CAT-update/pipeline.py`` (IPython defines ``__file__``).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+def _resolve_script_dir() -> Path:
+    """Folder containing ``pipeline.py`` (for imports). Works when ``__file__`` is missing (e.g. exec)."""
+    try:
+        return Path(__file__).resolve().parent
+    except NameError:
+        env = os.environ.get("CAT_UPDATE_SCRIPT_DIR")
+        if env:
+            return Path(env).expanduser().resolve()
+        return Path.cwd().resolve()
+
+
+SCRIPT_DIR = _resolve_script_dir()
 
 # ---------------------------------------------------------------------------
 # Hardcode your data workspace here (optional).
@@ -33,7 +51,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 #   HARDCODED_DATA_ROOT = Path("/content/drive/MyDrive/CAT test/input")
 #   HARDCODED_DATA_ROOT = Path(r"C:\Users\me\Projects\CAT-data")
 # ---------------------------------------------------------------------------
-HARDCODED_DATA_ROOT: Path("/content/drive/MyDrive/CAT test")
+HARDCODED_DATA_ROOT: Path | str | None = None
 
 
 def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
