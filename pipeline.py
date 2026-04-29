@@ -54,7 +54,7 @@ SCRIPT_DIR = _resolve_script_dir()
 #   HARDCODED_DATA_ROOT = Path("/content/drive/MyDrive/CAT test/input")
 #   HARDCODED_DATA_ROOT = Path(r"C:\Users\me\Projects\CAT-data")
 # ---------------------------------------------------------------------------
-HARDCODED_DATA_ROOT: Path | str | None = None
+HARDCODED_DATA_ROOT: Path("/content/drive/MyDrive/CAT test")
 
 
 def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
