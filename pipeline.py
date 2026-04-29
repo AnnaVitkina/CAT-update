@@ -1,13 +1,14 @@
 """
 End-to-end **data** pipeline: transform inputs → merge (update.py) → impact report → copy Excel to ``output/`` → cleaning.
 
-**Paths:** Either set **three** globals ``INPUT_STORAGE``, ``PROCESSING_STORAGE``, ``OUTPUT_STORAGE``
-(pointing at your ``input``, ``processing``, and ``output`` trees on Drive/GCS — see below), **or**
-use a **single** workspace with ``--root`` / ``HARDCODED_DATA_ROOT`` (folder containing
-``input/``, ``processing/``, ``output/``).
+**Paths:** Either set **three** globals ``INPUT_STORAGE``, ``PROCESSING_STORAGE``, ``OUTPUT_STORAGE``.
+``INPUT_STORAGE`` must be the folder that **directly contains** the ``update/`` and ``rate/`` subfolders
+(CSVs live under ``…/update``, Excel rate templates under ``…/rate``). ``PROCESSING_STORAGE`` and
+``OUTPUT_STORAGE`` are the working and final-output trees. **Alternatively**, use one workspace folder with
+``--root`` / ``HARDCODED_DATA_ROOT`` (folder containing ``input/``, ``processing/``, ``output/``).
 
 Steps:
-1. Choose ``input/update/*.csv`` and ``input/rate/*.xlsx`` (same prompts as ``update.py``).
+1. Choose ``update/*.csv`` and ``rate/*.xlsx`` (same prompts as ``update.py``) — in single-tree mode these live under ``input/``; in split mode they live directly under ``INPUT_STORAGE`` in those subfolders.
 2. Convert CSV + Excel → JSON under ``processing/update`` and ``processing/rate``.
 3. Run ``update.main()`` merge + result Excel.
 4. Run ``update_impact_report`` on the combined JSON + baseline rate JSON.
@@ -51,7 +52,7 @@ SCRIPT_DIR = _resolve_script_dir()
 # **Split storage** — set all three to use different folders (e.g. separate Google Drive dirs).
 # ``--root`` / ``HARDCODED_DATA_ROOT`` are then ignored.
 #
-#   INPUT_STORAGE     → directory that contains ``update/`` (CSV) and ``rate/`` (Excel templates)
+#   INPUT_STORAGE     → **parent** of ``update/`` and ``rate/`` (not inside them): CSVs in ``…/update``, xlsx in ``…/rate``
 #   PROCESSING_STORAGE → directory that contains ``rate/``, ``update/``, ``update_to_perform/``, ``result/``
 #   OUTPUT_STORAGE    → final Excel outputs (impact report + merged workbook copy)
 #
@@ -61,7 +62,7 @@ SCRIPT_DIR = _resolve_script_dir()
 #   OUTPUT_STORAGE = Path("/content/drive/ShareC/output")
 # ---------------------------------------------------------------------------
 INPUT_STORAGE = Path("/content/drive/MyDrive/CAT test/input")
-PROCESSING_STORAGE = Path("/content/drive/MyDrive/CAT test/processing")
+PROCESSING_STORAG = Path("/content/drive/MyDrive/CAT test/processing")
 OUTPUT_STORAGE = Path("/content/drive/MyDrive/CAT test/output")
 
 # ---------------------------------------------------------------------------
@@ -146,7 +147,12 @@ def apply_split_paths(
     processing_storage: Path,
     output_storage: Path,
 ) -> None:
-    """Three independent roots (input / processing / output trees)."""
+    """
+    Three independent roots (input / processing / output trees).
+
+    ``input_storage`` is the directory that contains ``update/`` and ``rate/`` subfolders
+    (same layout as ``…/input`` in single-tree mode, but without requiring the folder to be named ``input``).
+    """
     import transform_inputs as ti
 
     inp = input_storage.resolve(strict=False)
@@ -428,7 +434,7 @@ def main() -> None:
         print(f"Warning: expected combined JSON missing: {combined_path}")
 
     print("\n--- update_impact_report.py ---\n")
-    out_dir = data_root / "output"
+    # out_dir was set in split branch (output_storage) or legacy branch (data_root/output).
     old_argv = sys.argv[:]
     try:
         sys.argv = [
