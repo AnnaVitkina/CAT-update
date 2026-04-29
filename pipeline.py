@@ -1,8 +1,9 @@
 """
 End-to-end **data** pipeline: transform inputs → merge (update.py) → impact report → copy Excel to ``output/`` → cleaning.
 
-**Data root** (``--root``) holds ``input/``, ``processing/``, and ``output/``.  
-Scripts stay next to this file; only folder paths are redirected to the data root.
+**Data root**: folder that contains ``input/``, ``processing/``, and ``output/`` (or ``…/input`` —
+see ``normalize_data_root``). Set ``HARDCODED_DATA_ROOT`` below to skip ``--root``, or pass
+``--root`` on the command line to override it.
 
 Steps:
 1. Choose ``input/update/*.csv`` and ``input/rate/*.xlsx`` (same prompts as ``update.py``).
@@ -23,6 +24,35 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# ---------------------------------------------------------------------------
+# Hardcode your data workspace here (optional).
+# Same rules as ``--root``: either the parent folder of ``input/`` **or** the path ending in
+# ``…/input``. Use ``None`` to rely on ``--root`` or the script directory (default).
+# Examples:
+#   HARDCODED_DATA_ROOT = Path("/content/drive/MyDrive/CAT test/input")
+#   HARDCODED_DATA_ROOT = Path(r"C:\Users\me\Projects\CAT-data")
+# ---------------------------------------------------------------------------
+HARDCODED_DATA_ROOT: Path("/content/drive/MyDrive/CAT test")
+
+
+def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
+    """
+    Resolve the workspace folder that contains ``input/``, ``processing/``, ``output/``.
+
+    You may pass either that folder (e.g. ``…/CAT test``) **or** the ``input`` folder itself
+    (e.g. ``/content/drive/MyDrive/CAT test/input``) — if the last segment is ``input``,
+    its parent is used as the data root. Spaces in path segments are fine (quote in shell).
+    """
+    if raw is None:
+        return default.resolve()
+    p = Path(raw).expanduser()
+    if p.name.lower() == "input":
+        p = p.parent
+    try:
+        return p.resolve(strict=False)
+    except TypeError:
+        return p.resolve()
 
 
 def _ensure_on_path() -> None:
@@ -94,7 +124,12 @@ def main() -> None:
         "--root",
         type=Path,
         default=None,
-        help=f"Data root with input/, processing/, output/ (default: this script folder: {SCRIPT_DIR})",
+        metavar="PATH",
+        help=(
+            "Workspace folder containing input/, processing/, output/, OR the path to …/input "
+            "(parent is used). Example: /content/drive/MyDrive/CAT test/input "
+            f"(default: {SCRIPT_DIR})"
+        ),
     )
     ap.add_argument(
         "--skip-clean",
@@ -103,7 +138,14 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    data_root = (args.root or SCRIPT_DIR).resolve()
+    if args.root is not None:
+        raw_root: Path | str | None = args.root
+    elif HARDCODED_DATA_ROOT is not None:
+        raw_root = HARDCODED_DATA_ROOT
+    else:
+        raw_root = None
+
+    data_root = normalize_data_root(raw_root, default=SCRIPT_DIR)
     apply_data_root(data_root)
     ensure_layout(data_root)
 
@@ -118,7 +160,7 @@ def main() -> None:
     up.OUT_RESULT_DIR = data_root / "processing" / "result"
     uir.OUTPUT_DIR_DEFAULT = data_root / "output"
 
-    print(f"\nData root: {data_root}\n")
+    print(f"\nData root (workspace): {data_root}\n")
     print("Select files (same lists as update.py).\n")
 
     csv_path = up.prompt_pick_csv()
