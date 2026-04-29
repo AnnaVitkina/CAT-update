@@ -33,7 +33,9 @@ Reference workflow (container CY-CY, e.g. ``Ocean Rates 20260306 23-24`` ×
    | **p/unit**. Zero MIN keeps the two-column Currency | p/unit layout (no Flat column).
 
 Additional code paths support other RoRo / tier-edge cases; container CY-CY and *DFT* breakbulk above
-are the documented reference flows.
+are the documented reference flows. *DFT* BAF / EU ETS ``since``→dated column migration (2026 window
+splits) runs only when the CSV for this merge includes *DFT* BAF / EU ETS fee values; see
+``MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES``.
 
 **Inputs:** *Rate* — ``processing/rate/*.json``; *Update* — ``input/update/*.csv``.
 
@@ -76,8 +78,12 @@ OUT_RESULT_DIR = ROOT / "processing" / "result"
 # Verbose per-record lines in ``processing/result/*_report.txt`` (merge trace).
 MERGE_FULL_TRACE = True
 
-# *DFT* BAF / EU ETS: card-wide migration — lanes still on ``since`` get two finite windows
-# (deep-copy row; same Currency/Price unless that split already exists from CSV).
+# *DFT* BAF / EU ETS: ``since`` headers → two dated windows (deep-copy row; same Currency/Price).
+# By default this runs only when the **current CSV** includes *DFT* BAF / EU ETS fee values
+# (``*DFTBAF_*`` / ``*DFTEU_ETS_*``), so container-only updates do not restructure breakbulk
+# fee columns. Set ``MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES = False`` to always
+# migrate every lane that still has a ``since`` row (legacy card-wide behavior).
+MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES = True
 BAF_SINCE_2026_COST = "BAF Fee (since 15.01.2026)"
 BAF_SPLIT_WINDOWS_2026: tuple[tuple[str, date, date], ...] = (
     ("BAF Fee (15.01.2026 - 14.04.2026)", date(2026, 1, 15), date(2026, 4, 14)),
@@ -2004,6 +2010,56 @@ def rec_has_dft_rate_column_values(rec: dict) -> bool:
     return False
 
 
+def rec_has_dft_baf_fee_values(rec: dict) -> bool:
+    """True if ``rec`` carries a non-empty *DFT* BAF w/m rate (table or ``DFT_BAF_EU_ETS_WINDOWS``)."""
+    wins = rec.get(DFT_BAF_EU_ETS_WINDOWS_KEY)
+    if isinstance(wins, list):
+        for w in wins:
+            if not isinstance(w, dict):
+                continue
+            if w.get("*DFTBAF_rate (per w/m)") not in (None, ""):
+                return True
+    for col in rec:
+        k = dft_rate_column_kind(col)
+        if k and k[1] == "BAF" and rec.get(col) not in (None, ""):
+            return True
+    return False
+
+
+def rec_has_dft_eu_ets_fee_values(rec: dict) -> bool:
+    """True if ``rec`` carries a non-empty *DFT* EU ETS w/m rate (table or windows)."""
+    wins = rec.get(DFT_BAF_EU_ETS_WINDOWS_KEY)
+    if isinstance(wins, list):
+        for w in wins:
+            if not isinstance(w, dict):
+                continue
+            if w.get("*DFTEU_ETS_rate (per w/m)") not in (None, ""):
+                return True
+    for col in rec:
+        k = dft_rate_column_kind(col)
+        if k and k[1] == "EU_ETS" and rec.get(col) not in (None, ""):
+            return True
+    return False
+
+
+def merged_records_touch_dft_baf_fee(merged_records: list[dict]) -> bool:
+    """True if any combined CSV row for this merge includes *DFT* BAF fee data."""
+    for rec in merged_records:
+        for sr in flat_records_from_combined_merge_rec(rec):
+            if rec_has_dft_baf_fee_values(sr):
+                return True
+    return False
+
+
+def merged_records_touch_dft_eu_ets_fee(merged_records: list[dict]) -> bool:
+    """True if any combined CSV row for this merge includes *DFT* EU ETS fee data."""
+    for rec in merged_records:
+        for sr in flat_records_from_combined_merge_rec(rec):
+            if rec_has_dft_eu_ets_fee_values(sr):
+                return True
+    return False
+
+
 def _lane_validity_overlaps_csv_window(
     ln: dict, upd_lo: date, upd_hi: date
 ) -> bool:
@@ -3242,20 +3298,38 @@ def merge_rate_with_updates(
     lanes = consolidate_mergeable_route_lanes(lanes, issues)
     for ln in lanes:
         ln["Costs"] = _dedupe_duplicate_cost_names_on_lane(ln.get("Costs", []))
-    _migrate_since_tier_to_split_columns(
-        lanes,
-        issues,
-        since_cost=BAF_SINCE_2026_COST,
-        split_specs=BAF_SPLIT_WINDOWS_2026,
-        issue_label="BAF",
+    run_baf_since_split = (
+        not MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES
+        or merged_records_touch_dft_baf_fee(merged_records)
     )
-    _migrate_since_tier_to_split_columns(
-        lanes,
-        issues,
-        since_cost=EU_ETS_SINCE_2026_COST,
-        split_specs=EU_ETS_SPLIT_WINDOWS_2026,
-        issue_label="EU ETS",
+    run_eu_ets_since_split = (
+        not MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES
+        or merged_records_touch_dft_eu_ets_fee(merged_records)
     )
+    if run_baf_since_split:
+        _migrate_since_tier_to_split_columns(
+            lanes,
+            issues,
+            since_cost=BAF_SINCE_2026_COST,
+            split_specs=BAF_SPLIT_WINDOWS_2026,
+            issue_label="BAF",
+        )
+    elif MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES:
+        issues.append(
+            "  post-merge: skipped BAF ``since``→split migration — CSV has no *DFTBAF_* fee values."
+        )
+    if run_eu_ets_since_split:
+        _migrate_since_tier_to_split_columns(
+            lanes,
+            issues,
+            since_cost=EU_ETS_SINCE_2026_COST,
+            split_specs=EU_ETS_SPLIT_WINDOWS_2026,
+            issue_label="EU ETS",
+        )
+    elif MIGRATE_SINCE_TIER_SPLITS_ONLY_WHEN_CSV_HAS_DFT_FEES:
+        issues.append(
+            "  post-merge: skipped EU ETS ``since``→split migration — CSV has no *DFTEU_ETS_* fee values."
+        )
     for ln in lanes:
         prune_dft_breakbulk_fees_outside_lane_window(ln)
     for ln in lanes:
