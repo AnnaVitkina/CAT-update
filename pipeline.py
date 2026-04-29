@@ -62,9 +62,9 @@ SCRIPT_DIR = _resolve_script_dir()
 #   PROCESSING_STORAGE = Path("/content/drive/ShareB/processing")
 #   OUTPUT_STORAGE = Path("/content/drive/ShareC/output")
 # ---------------------------------------------------------------------------
-INPUT_STORAGE: Path | str | None = None
-PROCESSING_STORAGE: Path | str | None = None
-OUTPUT_STORAGE: Path | str | None = None
+INPUT_STORAGE = Path("/content/drive/Shareddrives/FA Ops Europe: Rate Maintenance Team /Documents/AI Adoption RMT/RMT_CAT_update/input")
+PROCESSING_STORAGE = Path("/content/drive/Shareddrives/FA Ops Europe: Rate Maintenance Team /Documents/AI Adoption RMT/RMT_CAT_update/processing")
+OUTPUT_STORAGE = Path("/content/drive/Shareddrives/FA Ops Europe: Rate Maintenance Team /Documents/AI Adoption RMT/RMT_CAT_update/output")
 
 # ---------------------------------------------------------------------------
 # **Single-tree mode** (only when the three paths above are all ``None``):
