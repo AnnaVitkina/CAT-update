@@ -18,6 +18,8 @@ Steps:
 - ``os.chdir("/content/CAT-update")`` before ``exec`` (uses current directory as script folder), or
 - ``os.environ["CAT_UPDATE_SCRIPT_DIR"] = "/content/CAT-update"`` before loading, or
 - ``%run /content/CAT-update/pipeline.py`` (IPython defines ``__file__``).
+
+CLI parsing uses ``parse_known_args()`` so Jupyter kernel flags (e.g. ``-f …/kernel.json``) are ignored.
 """
 
 from __future__ import annotations
@@ -154,7 +156,8 @@ def main() -> None:
         action="store_true",
         help="Do not run cleaning at the end.",
     )
-    args = ap.parse_args()
+    # Jupyter/IPython inject e.g. ``-f …/kernel-….json`` — ignore unknown argv tails.
+    args, _unknown_argv = ap.parse_known_args()
 
     if args.root is not None:
         raw_root: Path | str | None = args.root
