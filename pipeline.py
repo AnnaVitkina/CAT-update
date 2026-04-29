@@ -13,11 +13,12 @@ Steps:
 5. Copy merged result ``*.xlsx`` into ``output/`` (impact report already writes there).
 6. Run ``cleaning.clean_processing`` only (``input/`` is not touched).
 
-**Colab / Jupyter:** ``exec(open(...))`` does not define ``__file__``. Fix one of:
+**Colab / Jupyter:** ``exec(open(...))`` does not define ``__file__``. Use one of:
 
-- ``os.chdir("/content/CAT-update")`` before ``exec`` (uses current directory as script folder), or
-- ``os.environ["CAT_UPDATE_SCRIPT_DIR"] = "/content/CAT-update"`` before loading, or
-- ``%run /content/CAT-update/pipeline.py`` (IPython defines ``__file__``).
+- **Recommended:** ``os.environ["CAT_UPDATE_SCRIPT_DIR"] = "/content/CAT-update"`` (repo folder with ``transform_inputs.py``) before loading the file.
+- ``os.chdir("/content/CAT-update")`` before ``exec`` so ``cwd`` resolves imports.
+- Pass a globals dict: ``exec(open(..., encoding="utf-8").read(), {"__file__": "/content/CAT-update/pipeline.py", "__name__": "__main__"})``
+- Or ``%run /content/CAT-update/pipeline.py``.
 
 CLI parsing uses ``parse_known_args()`` so Jupyter kernel flags (e.g. ``-f …/kernel.json``) are ignored.
 """
@@ -34,12 +35,12 @@ from pathlib import Path
 
 def _resolve_script_dir() -> Path:
     """Folder containing ``pipeline.py`` (for imports). Works when ``__file__`` is missing (e.g. exec)."""
+    env = os.environ.get("CAT_UPDATE_SCRIPT_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
     try:
         return Path(__file__).resolve().parent
     except NameError:
-        env = os.environ.get("CAT_UPDATE_SCRIPT_DIR")
-        if env:
-            return Path(env).expanduser().resolve()
         return Path.cwd().resolve()
 
 
@@ -75,10 +76,39 @@ def normalize_data_root(raw: Path | str | None, *, default: Path) -> Path:
         return p.resolve()
 
 
+def _repo_root_candidates() -> list[Path]:
+    """Ordered locations that might contain ``transform_inputs.py`` (``exec`` has no ``__file__``)."""
+    out: list[Path] = []
+    env = os.environ.get("CAT_UPDATE_SCRIPT_DIR")
+    if env:
+        out.append(Path(env).expanduser().resolve())
+    out.append(SCRIPT_DIR)
+    out.append(Path.cwd().resolve())
+    # De-dupe, keep order
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for p in out:
+        k = str(p)
+        if k in seen:
+            continue
+        seen.add(k)
+        unique.append(p)
+    return unique
+
+
 def _ensure_on_path() -> None:
-    sd = str(SCRIPT_DIR)
-    if sd not in sys.path:
-        sys.path.insert(0, sd)
+    for root in _repo_root_candidates():
+        if (root / "transform_inputs.py").is_file():
+            s = str(root)
+            if s not in sys.path:
+                sys.path.insert(0, s)
+            return
+    raise RuntimeError(
+        "Cannot find transform_inputs.py (CAT-update code folder). "
+        "Before running: os.chdir('/content/CAT-update') to the repo, or set "
+        "os.environ['CAT_UPDATE_SCRIPT_DIR'] to that folder (the directory that contains "
+        "transform_inputs.py and pipeline.py)."
+    )
 
 
 def apply_data_root(data_root: Path) -> None:
