@@ -55,6 +55,14 @@ def clean_processing(root: Path | None = None) -> list[str]:
     return _clean_category_base(base)
 
 
+def clean_processing_folder(processing_root: Path) -> list[str]:
+    """
+    Empty all files under an explicit ``processing`` directory (each child folder’s contents).
+    Use when ``input/`` and ``processing/`` live under different parents (e.g. separate Drive folders).
+    """
+    return _clean_category_base(processing_root.resolve())
+
+
 def clean_input_and_processing(root: Path | None = None) -> list[str]:
     """Run :func:`clean_input` and :func:`clean_processing`; return combined error lines."""
     r = root or ROOT
